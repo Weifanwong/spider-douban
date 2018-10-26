@@ -1,0 +1,66 @@
+话题广场的url为：https://www.douban.com/gallery/
+
+通过对该页面的检查发现，对于每一个话题我们能获得的信息有：作者、评论数、点赞数、推荐数、来自话题、发表日期。但详细的文章内容、评论内容、评论者信息都无法
+获得因此为了爬取这些信息，单单靠一个parse函数是不够的。
+针对上述问题，我的思路是，先将可以爬取到信息爬取出来，再将文章详情页面的url取出来，以request的方式将url以及首页的信息传给sparse函数，并在sparse函数中
+进一步提取信息，包装成items，最终传给pipeline进行存储。
+
+如何获得文章详情页面的url？因为我们发现利用普通的检查json包的方式提取出来的url是无效的：
+https://www.douban.com/stat.html?ref=%2Fgroup%2Fexplore&from=top-nav-click-main&uid=0
+输入浏览器得到的是：
+{"msg": "invalid_request_1284", "code": 1287, "request": "GET \/rexxar\/v2\/gallery\/hot_items", "localized_message": ""}
+
+我认为这是网站的反爬措施之一，出现这种情况的原因是我们目前的爬虫操作被轻易的检测出来不是人为浏览行为，我们必须在爬取数据之前将发出的request headers重写
+一遍，从而模拟人浏览网页的行为。因此需要在spider中加上headers：
+			headers = {
+	'Accept': 'application/json, text/javascript, */*; q=0.01',
+	'Accept-Encoding': 'gzip deflate br',
+	'Accept-Language': 'zh-CN zh;q=0.8 en;q=0.8',
+	'Connection': 'keep-alive',
+	'Content-Type': 'application/x-www-form-urlencoded',
+	'Cookie': 'bid=xJ55aenBWk8; gr_user_id=907dd229-4c03-470a-becd-8c9beab8a80d; _vwo_uuid_v2=DBC7EFF871EB072FE541212E6F890B661|f0af014940967be9220329bc43c6b6c7; ll="118371"; douban-fav-remind=1; __utmz=30149280.1539521166.25.24.utmcsr=blog.csdn.net|utmccn=(referral)|utmcmd=referral|utmcct=/lionel_fengj/article/details/72904843; viewed="26958126_26286154_20432061_2157831_4328644"; ps=y; as="https://www.douban.com/people/122310507/"; __utma=30149280.1986362691.1511832885.1539583156.1540306775.28; __utmc=30149280; ap_v=0,6.0; __utmt=1; __utmb=30149280.6.10.1540306775',
+	'Host': 'm.douban.com',
+	'Origin': 'https://www.douban.com',
+	'Referer': 'https://www.douban.com/gallery/',
+	'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.67 Safari/537.36',
+	}
+
+在这种情况下就我们的爬虫就可以正常访问上述url了！虽然我们浏览器中还是看不到任何东西。
+点击评论我们跳转到文章详情的界面，发现浏览器上方的url变为:
+https://www.douban.com/note/694282781/#comments
+去掉comments得到的url就是该文章的详情页面，我们复制这段url中的文章id：694282781，并在检查中搜索发现，该id存在与XHR的response中：
+..."url": "https:\/\/www.douban.com\/note\/694282781\/"...
+所以我们如何在爬虫代码中把这个url拿出来呢？我们说XHR的response其实就是访问上述url得到的回馈，因此自然而然的就可以想到，我们可以通过将上述url的内容完全
+爬取下来，然后利用字符串操作把url找出来。
+
+
+具体代码实现如下：
+	name = 'douban'
+	def start_requests(self):
+		#base_url = 'https://www.douban.com/gallery/'
+		url = 'https://m.douban.com/rexxar/api/v2/gallery/hot_items?'
+		param = {'ck':'null','count':20}
+		for page in range(0,1):
+			param['start'] = page * 20
+			full_url = url + urlencode(param)
+
+			headers = {
+  ...
+	}
+
+			req = urllib.request.Request(full_url,None,headers)
+			response = urllib.request.urlopen(req) 
+			the_page = response.read()	#取出来是byte类型
+			data = json.loads(the_page) #用loads函数换成json类型
+			for ele in data['items']:
+				yield scrapy.Request(url = ele['target']['url'],callback=self.parse,)
+        
+运行表明，我们的确取出了博客首页的response中的url，并且传给了parse函数。另外我们可以在传递函数中放一些首页中爬取到的参数，如下：
+yield scrapy.Request(url = ele['target']['url'],callback=self.parse,
+					meta={'nums_dz':ele['target']['likers_count'],
+				'nums_intro':ele['target']['timeline_share_count'],
+				'nums_comment':ele['target']['comments_count'],'topic_name':ele['topic']['name']})
+        
+        
+这样就完成了首页的信息传递和文章详情页面的进入，接下来只需要在sparse函数中将文章详情页面中的数据爬取下来就好了！
+
